@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MPD type="static" xmlns="urn:mpeg:dash:schema:mpd:2011" profiles="urn:mpeg:dash:profile:isoff-live:2011" minBufferTime="PT0.451S" mediaPresentationDuration="PT9M32.520S">
+<!-- MPEG DASH ISO BMFF test stream -->
+<!-- Audio only service -->
+<!-- BBC Research & Development -->
+<!-- For more information see http://rdmedia.bbc.co.uk -->
+<ProgramInformation>
+	<Title>Adaptive Bitrate Test Stream from BBC Research and Development - Radio stream</Title>
+	<Source>BBC Research and Development</Source>
+</ProgramInformation>
+<Period duration="PT9M32.520S" start="PT0S">
+	<AdaptationSet startWithSAP="2" segmentAlignment="true" id="3" codecs="mp4a.40.2" audioSamplingRate="48000" lang="eng" mimeType="audio/mp4" >
+		<AudioChannelConfiguration schemeIdUri="urn:mpeg:dash:23003:3:audio_channel_configuration:2011" value="2"/>
+		<BaseURL>audio/</BaseURL>
+		<SegmentTemplate timescale="1000" duration="3840" media="$RepresentationID$/$Number%06d$.m4s" initialization="$RepresentationID$/IS.mp4" />
+		<Representation id="160kbps" bandwidth="160000" />
+		<Representation id="96kbps" bandwidth="96000" />
+		<Representation id="128kbps" bandwidth="128000" />
+	</AdaptationSet>
+</Period>
+</MPD>
