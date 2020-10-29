@@ -21,22 +21,61 @@ logger = logging.getLogger('DASH_WEBSERVER.{}'.format(__name__))
 SERVER_FILE_PATH = "/dash_contents"
 DASH_STREAM_FILE = "stream.mpd"
 EGRESS_ENDPOINT = "rate"
-VERY_HIGH_RATE_KBITS = 8000
+LATENCY_ENDPOINT = "delay"
+JITTER_ENDPOINT = "jitter"
+PACKET_ERROR_ENDPOINT = "packet_error"
+VERY_HIGH_RATE_KBITS = 80000
 DEFAULT_RATE_KBITS = VERY_HIGH_RATE_KBITS
+DEFAULT_LATENCY_MS = 0
+DEFAULT_JITTER_MS = 0
+DEFAULT_PACKET_ERROR_RATE_PERCENT = 0
+
+#Commands
 TRAFFIC_SHAPER_CLEAR_COMMAND = "/wondershaper -ca eth0"
-TRAFFIC_SHAPER_COMMAND = "/wondershaper -a eth0 -u {rate} -d {rate}"
+TRAFFIC_SHAPER_RATE_COMMAND = "/wondershaper -a eth0 -u {rate} -d {rate}"
+TRAFFIC_SHAPER_PACKET_ERROR_OPTION = " -e {}"
+TRAFFIC_SHAPER_LATENCY_OPTION = " -l {}"
+TRAFFIC_SHAPER_JITTER_OPTION = " -j {}"
 CONTENT_PORT = 8080
 RATE_HANDLER_PORT = 8088
 
-def shape_traffic(rate):
-    """
-    Does traffic shaping inside the container
+#Valid Endpoints for Traffic Shaping
+DEFAULT_VALUES = \
+    {EGRESS_ENDPOINT: DEFAULT_RATE_KBITS,
+     LATENCY_ENDPOINT: DEFAULT_LATENCY_MS,
+     JITTER_ENDPOINT: DEFAULT_JITTER_MS,
+     PACKET_ERROR_ENDPOINT: DEFAULT_PACKET_ERROR_RATE_PERCENT}
 
-    Args:
-        rate (int): [description]
+
+
+def shape_traffic(rate, delay=10, jitter=0, packet_error=0):
     """
+    Shapes traffic. Rate is mandatory, other settings are optional.
+
+    :param rate: Packet rate in kbits/second
+    :type rate: Int
+    :param delay: Delay in ms, defaults to 0
+    :type delay: int, optional
+    :param jitter: Delay Jitter in ms, defaults to 0. I.e 10 ms delay +/- jitter
+        ms
+    :type jitter: int, optional
+    :param packet_error_percent: Packet error rate in percent, defaults to 0
+        min accuracy of .1%
+    :type packet_error_percent: int/float, optional
+    """
+    net_em_append_base=""
+    if delay:
+        net_em_append_base += TRAFFIC_SHAPER_LATENCY_OPTION.format(delay)
+    if jitter and net_em_append_base:
+        net_em_append_base += TRAFFIC_SHAPER_JITTER_OPTION.format(jitter)
+    if packet_error:
+        net_em_append_base += \
+            TRAFFIC_SHAPER_PACKET_ERROR_OPTION.format(packet_error)
+    cmd = TRAFFIC_SHAPER_RATE_COMMAND.format(rate=rate, percent=0) + \
+        net_em_append_base
+    logger.info("Wondershaper Command: %s", cmd)
     os.system(TRAFFIC_SHAPER_CLEAR_COMMAND)
-    os.system(TRAFFIC_SHAPER_COMMAND.format(rate=rate))
+    os.system(cmd)
 
 def get_host_ip():
     """
@@ -62,28 +101,46 @@ class RateHandler(resource.Resource):
         Args:
             path (string): Directory to files that are being shared
         """
-        self.curr_rate = DEFAULT_RATE_KBITS
-        shape_traffic(self.curr_rate)
+        self.data = dict(DEFAULT_VALUES)
+        shape_traffic(**self.data)
 
     def render_GET(self, request):
         """
-        Adjusts the egress rate of the server to a user-specified value
-
+        Adjusts the following endpoints to user-specified values:
+            `rate`: Sets egress/ingress rates (default 8000 kbits/s)
+            `packet_error`: Packet Error raate (default 0%)
+            `delay`: Packet delay in ms (default 0ms)
+            `jitter`: Packet delay jitter (delay +/- jitter ms, default 0ms)
         Args:
             request (request object): request object
         """
         logger.info("Request args %s", request.args.keys())
-        if EGRESS_ENDPOINT in request.args.keys():
+
+        # Find the common set of keys between what is valid and what was sent
+        # To the server
+        common_endpoints = list(set(self.data.keys()) &
+                                set(request.args.keys()))
+
+        # Iterate through data and compare against what's stored
+        changed = False
+        for endpoint in common_endpoints:
             try:
-                rate = int(request.args[EGRESS_ENDPOINT][0])
+                val = int(request.args[endpoint][0])
             except ValueError:
-                logger.error("Invalid rate parameter passed in")
-                return "Rate Value Error\n"
-            if self.curr_rate != rate:
-                logger.info("Adjusting egress rate: %s", rate)
-                shape_traffic(rate)
-                self.curr_rate = rate
-        return "Rate={}\n".format(self.curr_rate)
+                logger.error("Invalid {} parameter passed in".format(endpoint))
+                return "{} Value Error\n".format(endpoint)
+            if self.data[endpoint] != val:
+                logger.info("Adjusting %s: %s", endpoint, val)
+                self.data[endpoint] = val
+                changed = True
+        if changed:
+            shape_traffic(**self.data)
+
+        ret_val = "Received:\n"
+        for endpoint in common_endpoints:
+            ret_val += "{}={} \n".format(endpoint, self.data[endpoint])
+        ret_val += "\n"
+        return ret_val
 
 
 class ContentServer(threading.Thread):

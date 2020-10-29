@@ -34,7 +34,7 @@ eval export NOPRIOPORTDST=$NOPRIOPORTDST;
 
 usage() {
 cat << EOF
-USAGE: $0 [-hcs] [-a <adapter>] [-d <rate>] [-u <rate>]
+USAGE: $0 [-hcs] [-a <adapter>] [-d <rate>] [-u <rate>] [-e <percent>]
 
 Limit the bandwidth of an adapter
 
@@ -47,6 +47,8 @@ OPTIONS:
    -c           Clear the limits from adapter
    -s           Show the current status of adapter
    -v           Show the current version
+   -e           Set packet error rate in percent
+   -l           Set packet latency in ms
 
    Configure HIPRIODST in "$CONF" for hosts
    requiring high priority i.e. in case ssh uses dport 443.
@@ -55,6 +57,7 @@ MODES:
    wondershaper -a <adapter> -d <rate> -u <rate>
    wondershaper -c -a <adapter>
    wondershaper -s -a <adapter>
+   wondershape -a <adapater> -e <packet_error_percent> -l <latency_ms> -j <jitter_ms>
 
 EXAMPLES:
    wondershaper -a eth0 -d 1024 -u 512
@@ -69,8 +72,11 @@ USPEED="";
 IFACE="";
 IFB="ifb0";
 MODE="";
+PACKET_ERROR_PERCENT=""
+PACKET_LATENCY_MS=""
+PACKET_JITTER_MS=""
 
-while getopts hvd:u:a:pcs o; do
+while getopts hvd:u:e:l:j:a:pcs o; do
   case "$o" in
     h)	usage;
       exit 1;;
@@ -82,6 +88,9 @@ while getopts hvd:u:a:pcs o; do
     p) MODE="presets";;
     c) MODE="clear";;
     s) MODE="status";;
+    e) PACKET_ERROR_PERCENT="$OPTARG";;
+    l) PACKET_LATENCY_MS="$OPTARG";;
+    j) PACKET_JITTER_MS="$OPTARG";;
     [?])	usage;
 		exit 1;;
 	esac;
@@ -99,8 +108,6 @@ if [ "$MODE" = "presets" ]; then
     exit 1;
   fi;
 fi;
-
-
 
 if [[ -n "$MODE" ]] && [[ -z "$IFACE" ]]; then
     echo "Please supply the adapter name for the mode."
@@ -123,16 +130,19 @@ if [ "$MODE" = "clear" ]; then
     exit;
 fi;
 
-if { [[ -z "$DSPEED" ]] && [[ -z "$USPEED" ]]; } || [[ -z "$IFACE" ]]; then
+if { [[ -z "$DSPEED" ]] && [[ -z "$USPEED" ]] && [[ -z "$PACKET_ERROR_PERCENT" ]]; } \
+  || [[ -z "$IFACE" ]]; then
     usage;
     exit 1;
 fi;
 
+add_netem() {
+  "tc qdisc add dev "$IFACE" parent 1:1 handle 10:0 netem" $@
+}
+
 ###### uplink
-
 # install root HTB
-
-tc qdisc add dev "$IFACE" root handle 1: htb default 20;
+tc qdisc add dev "$IFACE" root handle 1: htb default 20
 
 # shape everything at $USPEED speed - this prevents huge queues in your
 # DSL modem which destroy latency:
@@ -142,8 +152,26 @@ if [[ -n "$USPEED" ]]; then
     rate "${USPEED}kbit" \
     prio 5 ${COMMONOPTIONS[@]};
 
-  # high prio class 1:10:
+  # Add netem to the bulk HTB node
+  if [[ ! -z "$PACKET_ERROR_PERCENT" ]] || [[ ! -z "$PACKET_LATENCY_MS" ]] \
+  || [[ ! -z "$PACKET_JITTER_MS" ]]; then
+    DELAY_CMD=""
+    JITTER_CMD=""
+    LOSS_CMD=""
+    if [[ ! -z "$PACKET_LATENCY_MS" ]]; then
+      DELAY_CMD=" delay ${PACKET_LATENCY_MS}ms"
+    fi;
+    if [[ ! -z "$PACKET_JITTER_MS" ]]; then
+      JITTER_CMD=" ${PACKET_JITTER_MS}ms"
+    fi;
+    if [[ ! -z "$PACKET_ERROR_PERCENT" ]]; then
+      LOSS_CMD=" loss ${PACKET_ERROR_PERCENT}%"
+    fi;
+    echo "Updating NetEM Components: $DELAY_CMD,$JITTER_CMD,$LOSS_CMD"
+    tc qdisc add dev "$IFACE" parent 1:1 handle 1 netem $DELAY_CMD $JITTER_CMD $LOSS_CMD
+  fi;
 
+  # high prio class 1:10:
   RATE=$((20*${USPEED}/100))
   if [ "$RATE" -eq 0 ]; then RATE=1 ; fi
   tc class add dev "$IFACE" parent 1:1 classid 1:10 htb \
@@ -152,7 +180,6 @@ if [[ -n "$USPEED" ]]; then
 
   # bulk and default class 1:20 - gets slightly less traffic,
   #  and a lower priority:
-
   RATE=$((40*${USPEED}/100))
   if [ "$RATE" -eq 0 ]; then RATE=1 ; fi
   tc class add dev "$IFACE" parent 1:1 classid 1:20 htb \
@@ -160,7 +187,6 @@ if [[ -n "$USPEED" ]]; then
     prio 2 ${COMMONOPTIONS[@]};
 
   # 'traffic we hate'
-
   RATE=$((20*${USPEED}/100))
   if [ "$RATE" -eq 0 ]; then RATE=1 ; fi
   tc class add dev "$IFACE" parent 1:1 classid 1:30 htb \
@@ -196,7 +222,6 @@ if [[ -n "$USPEED" ]]; then
     match u16 0x0000 0xffc0 at 2 \
     flowid 1:10;
 
-
   # some traffic however suffers a worse fate
   for dport in "${NOPRIOPORTDST[@]}"; do
     [ -n "$dport" ] || continue
@@ -226,8 +251,8 @@ if [[ -n "$USPEED" ]]; then
 
   tc filter add dev "$IFACE" parent 1: protocol ip prio 18 u32 \
     match ip dst 0.0.0.0/0 flowid 1:20;
-
 fi;
+
 
 ########## downlink #############
 # slow downloads down to somewhat less than the real speed  to prevent
